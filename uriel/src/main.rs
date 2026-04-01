@@ -36,8 +36,8 @@ impl EventHandler for Handler {
 
             for attachment in msg.attachments.iter() {
                 match media_handler::route_to_vault(&attachment.url, &vault_path, &attachment.filename).await {
-                    Ok(_) => {
-                        final_content.push_str(&format!("\n![[{}]]", attachment.filename));
+                    Ok(vault_rel_path) => {
+                        final_content.push_str(&format!("\n![[{}]]", vault_rel_path));
                     },
                     Err(e) => {
                         println!("Failed to download attachment: {:?}", e);
@@ -65,19 +65,24 @@ impl EventHandler for Handler {
         Command::set_global_commands(&ctx.http, commands).await.expect("Failed to create global commands");
     }
 
-    async fn interaction_create(&self, _ctx: Context, interaction: Interaction) {
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(command) = interaction {
-            match command.data.name.as_str() {
-                "note" => {
-                    // note command
-                },
-                "draft" => {
-                    // draft command
-                },
-                "event" => {
-                    // event command
-                },
-                _ => {},
+            let response = match command.data.name.as_str() {
+                "note" => "Note command recognized (placeholder).",
+                "draft" => "Draft command recognized (placeholder).",
+                "event" => "Event command recognized (placeholder).",
+                _ => "Unknown command.",
+            };
+
+            use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
+
+            let data = CreateInteractionResponseMessage::new()
+                .content(response)
+                .ephemeral(true);
+            let builder = CreateInteractionResponse::Message(data);
+
+            if let Err(why) = command.create_response(&ctx.http, builder).await {
+                println!("Cannot respond to slash command: {why}");
             }
         }
     }
