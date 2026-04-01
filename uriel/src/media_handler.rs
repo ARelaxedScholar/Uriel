@@ -1,8 +1,7 @@
 use chrono::Datelike;
-use reqwest;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub async fn download(url: &str) -> Result<Vec<u8>, reqwest::Error> {
     let response = reqwest::get(url).await?.error_for_status()?;
