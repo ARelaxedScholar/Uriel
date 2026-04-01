@@ -3,7 +3,7 @@ use futures_util::StreamExt;
 use reqwest;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Maximum allowed download size in bytes (e.g., 20 MiB).
