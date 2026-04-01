@@ -36,8 +36,8 @@ impl EventHandler for Handler {
 
             for attachment in msg.attachments.iter() {
                 match media_handler::route_to_vault(&attachment.url, &vault_path, &attachment.filename).await {
-                    Ok(_) => {
-                        final_content.push_str(&format!("\n![[{}]]", attachment.filename));
+                    Ok(saved_name) => {
+                        final_content.push_str(&format!("\n![[{}]]", saved_name));
                     },
                     Err(e) => {
                         println!("Failed to download attachment: {:?}", e);
@@ -46,8 +46,19 @@ impl EventHandler for Handler {
             }
 
             let today = chrono::Local::now().naive_local().date();
-            if let Err(e) = vault_io::append_log(&final_content, today) {
-                println!("Failed to append to log: {:?}", e);
+            let final_content_clone = final_content.clone();
+            let append_result = tokio::task::spawn_blocking(move || {
+                vault_io::append_log(&final_content_clone, today)
+            }).await;
+
+            match append_result {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    println!("Failed to append to log: {:?}", e);
+                }
+                Err(join_err) => {
+                    println!("Failed to append to log (blocking task error): {:?}", join_err);
+                }
             }
         }
     }
@@ -65,19 +76,22 @@ impl EventHandler for Handler {
         Command::set_global_commands(&ctx.http, commands).await.expect("Failed to create global commands");
     }
 
-    async fn interaction_create(&self, _ctx: Context, interaction: Interaction) {
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(command) = interaction {
-            match command.data.name.as_str() {
-                "note" => {
-                    // note command
-                },
-                "draft" => {
-                    // draft command
-                },
-                "event" => {
-                    // event command
-                },
-                _ => {},
+            use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
+            let content = match command.data.name.as_str() {
+                "note" => "The `/note` command is not yet implemented.",
+                "draft" => "The `/draft` command is not yet implemented.",
+                "event" => "The `/event` command is not yet implemented.",
+                _ => return,
+            };
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(content)
+                    .ephemeral(true),
+            );
+            if let Err(e) = command.create_response(&ctx.http, response).await {
+                println!("Failed to acknowledge interaction: {:?}", e);
             }
         }
     }
