@@ -9,7 +9,9 @@ pub fn append_log(content: &str, date: NaiveDate) -> std::io::Result<()> {
     // Example: [VAULT_PATH]/Log/2023-10-25.md
     let log_dir = PathBuf::from(vault_path).join("Log");
 
-    std::fs::create_dir_all(&log_dir)?;
+    if !log_dir.exists() {
+        std::fs::create_dir_all(&log_dir)?;
+    }
 
     let file_path = log_dir.join(format!("{}.md", date.format("%Y-%m-%d")));
 
