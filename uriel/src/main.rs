@@ -46,19 +46,8 @@ impl EventHandler for Handler {
             }
 
             let today = chrono::Local::now().naive_local().date();
-            let final_content_clone = final_content.clone();
-            let append_result = tokio::task::spawn_blocking(move || {
-                vault_io::append_log(&final_content_clone, today)
-            }).await;
-
-            match append_result {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    println!("Failed to append to log: {:?}", e);
-                }
-                Err(join_err) => {
-                    println!("Failed to append to log (blocking task error): {:?}", join_err);
-                }
+            if let Err(e) = vault_io::append_log(&final_content, today) {
+                println!("Failed to append to log: {:?}", e);
             }
         }
     }
