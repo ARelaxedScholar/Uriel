@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub async fn download(url: &str) -> Result<Vec<u8>, reqwest::Error> {
-    let response = reqwest::get(url).await?;
+    let response = reqwest::get(url).await?.error_for_status()?;
     let bytes = response.bytes().await?;
     Ok(bytes.to_vec())
 }
