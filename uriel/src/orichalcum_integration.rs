@@ -54,7 +54,7 @@ impl AsyncNodeLogic for GeminiIngestionNode {
         };
 
         let client = reqwest::Client::new();
-        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}", api_key);
+        let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={}", api_key);
 
         let payload = json!({
             "contents": [{
