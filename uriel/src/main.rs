@@ -161,6 +161,16 @@ impl EventHandler for Handler {
                         // Phase 3 Regex Auto-Backlinker
                         for entity in &classification.entities_found {
                             let escaped_entity = regex::escape(entity);
+
+                            // First, un-wrap any already-wrapped entities to normalize.
+                            // e.g., turn [[Alice]] or [[[[Alice]]]] into Alice.
+                            // This regex is slightly over-permissive by stripping any sequence of '[' and ']'
+                            // immediately bounding the word, ensuring a clean slate.
+                            if let Ok(strip_re) = regex::Regex::new(&format!(r"\[+{}\]+", escaped_entity)) {
+                                log_content = strip_re.replace_all(&log_content, entity.as_str()).to_string();
+                            }
+
+                            // Now, safely wrap with exactly one set of [[ ]]
                             if let Ok(re) = regex::Regex::new(&format!(r"(?i)\b{}\b", escaped_entity)) {
                                 log_content = re.replace_all(&log_content, format!("[[{}]]", entity)).to_string();
                             }
