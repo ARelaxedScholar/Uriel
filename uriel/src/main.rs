@@ -73,10 +73,22 @@ impl EventHandler for Handler {
                 if let Some(guild_channel) = channel.guild() {
                     if guild_channel.thread_metadata.is_some() {
                         let thread_id = channel_id;
-                        let messages = match msg.channel_id.messages(&ctx, serenity::builder::GetMessages::new().limit(5)).await {
-                            Ok(msgs) => msgs,
-                            Err(_) => Vec::new(),
+
+                        let mut messages = if let Some(cached_msgs) = self.thread_cache.get(&thread_id).await {
+                            cached_msgs
+                        } else {
+                            match msg.channel_id.messages(&ctx, serenity::builder::GetMessages::new().limit(5)).await {
+                                Ok(msgs) => msgs,
+                                Err(_) => Vec::new(),
+                            }
                         };
+
+                        // Keep last 5 messages logic, but append current message
+                        if messages.len() >= 5 {
+                            messages.truncate(4);
+                        }
+                        messages.insert(0, msg.clone()); // newest message first
+
                         self.thread_cache.insert(thread_id, messages.clone()).await;
 
                         // Append context if available
@@ -118,23 +130,40 @@ impl EventHandler for Handler {
             let mut shared_state = HashMap::new();
             flow.run(&mut shared_state).await;
 
+            let mut success = false;
+
             if let Some(result_json) = shared_state.get("result") {
                 if let Ok(classification) = serde_json::from_value::<UrielClassification>(result_json.clone()) {
                     let mut log_content = classification.formatted_content.clone();
-                    for file_path in file_paths {
-                        let file_name = std::path::Path::new(&file_path).file_name().unwrap_or_default().to_string_lossy();
+                    for file_path in &file_paths {
+                        let file_name = std::path::Path::new(file_path).file_name().unwrap_or_default().to_string_lossy();
                         log_content.push_str(&format!("\n![[{}]]", file_name));
                     }
                     // For phase 2 we just append correctly, Phase 3 has backlink indexing.
                     let today = chrono::Local::now().naive_local().date();
                     if let Err(e) = vault_io::append_log(&log_content, today) {
                         println!("Failed to append to log: {:?}", e);
+                    } else {
+                        success = true;
                     }
                 } else {
                      println!("Failed to deserialize UrielClassification from result: {:?}", result_json);
                 }
             } else {
                  println!("Gemini logic execution returned no result.");
+            }
+
+            if !success {
+                println!("Falling back to raw append due to failure.");
+                let mut fallback_content = final_content.clone();
+                for file_path in &file_paths {
+                    let file_name = std::path::Path::new(file_path).file_name().unwrap_or_default().to_string_lossy();
+                    fallback_content.push_str(&format!("\n![[{}]]", file_name));
+                }
+                let today = chrono::Local::now().naive_local().date();
+                if let Err(e) = vault_io::append_log(&fallback_content, today) {
+                    println!("Critical failure: Failed to append raw content to log: {:?}", e);
+                }
             }
         }
     }
