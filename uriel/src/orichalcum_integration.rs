@@ -22,7 +22,24 @@ impl AsyncNodeLogic for GeminiIngestionNode {
     async fn exec(&self, input_val: JsonValue) -> JsonValue {
         let input_text = input_val.get("input_text").and_then(|v| v.as_str()).unwrap_or("");
 
-        let mut parts = vec![json!({"text": format!("Classify the following text into one of these intents: Note, Draft, Event, Disambiguate. Return JSON strictly matching this schema: {{ 'intent': '...', 'target_folder': '...', 'entities_found': [...], 'formatted_content': '...' }}. Text: {}", input_text)})];
+        let known_entities_str = match input_val.get("known_entities").and_then(|v| v.as_array()) {
+            Some(arr) => {
+                let entities: Vec<String> = arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect();
+                entities.join(", ")
+            },
+            None => String::new(),
+        };
+
+        let prompt_text = format!(
+            "Available entities: [{}]. If user mentions an entity, match exactly. If ambiguous, set intent to Disambiguate. \
+            Classify the following text into one of these intents: Note, Draft, Event, Disambiguate. Return JSON strictly matching this schema: {{ 'intent': '...', 'target_folder': '...', 'entities_found': [...], 'formatted_content': '...' }}. Text: {}",
+            known_entities_str, input_text
+        );
+
+        let mut parts = vec![json!({"text": prompt_text})];
 
         if let Some(media_path) = input_val.get("media_path").and_then(|v| v.as_str()) {
             if let Ok(bytes) = fs::read(media_path) {

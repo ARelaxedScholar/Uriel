@@ -15,18 +15,24 @@ mod vault_io;
 mod media_handler;
 mod gemini;
 mod orichalcum_integration;
+mod indexer;
+
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 struct Handler {
     thread_cache: Cache<u64, Vec<Message>>,
+    entity_cache: Arc<RwLock<Vec<String>>>,
 }
 
 impl Handler {
-    fn new() -> Self {
+    fn new(entity_cache: Arc<RwLock<Vec<String>>>) -> Self {
         let cache = Cache::builder()
             .time_to_live(Duration::from_secs(60 * 60))
             .build();
         Self {
             thread_cache: cache,
+            entity_cache,
         }
     }
 }
@@ -115,8 +121,10 @@ impl EventHandler for Handler {
             }
 
             // Orichalcum orchestration
+            let entities = self.entity_cache.read().await.clone();
             let mut initial_state: HashMap<String, JsonValue> = HashMap::new();
             initial_state.insert("input_text".to_string(), json!(final_content));
+            initial_state.insert("known_entities".to_string(), json!(entities));
             if let Some(path) = file_paths.first() {
                 initial_state.insert("media_path".to_string(), json!(path));
             }
@@ -134,17 +142,41 @@ impl EventHandler for Handler {
 
             if let Some(result_json) = shared_state.get("result") {
                 if let Ok(classification) = serde_json::from_value::<UrielClassification>(result_json.clone()) {
-                    let mut log_content = classification.formatted_content.clone();
-                    for file_path in &file_paths {
-                        let file_name = std::path::Path::new(file_path).file_name().unwrap_or_default().to_string_lossy();
-                        log_content.push_str(&format!("\n![[{}]]", file_name));
-                    }
-                    // For phase 2 we just append correctly, Phase 3 has backlink indexing.
-                    let today = chrono::Local::now().naive_local().date();
-                    if let Err(e) = vault_io::append_log(&log_content, today) {
-                        println!("Failed to append to log: {:?}", e);
+                    use crate::gemini::IntentEnum;
+                    if matches!(classification.intent, IntentEnum::Disambiguate) {
+                        println!("Intent is Disambiguate, halting write and asking for clarification.");
+                        let builder = serenity::builder::CreateThread::new("Clarification Needed");
+                        match msg.channel_id.create_thread_from_message(&ctx.http, msg.id, builder).await {
+                            Ok(thread_channel) => {
+                                let _ = thread_channel.send_message(&ctx.http, serenity::builder::CreateMessage::new().content("Could you clarify which entity you mean?")).await;
+                                success = true; // Handled successfully as an interruption
+                            },
+                            Err(e) => {
+                                println!("Failed to create disambiguation thread: {:?}", e);
+                            }
+                        }
                     } else {
-                        success = true;
+                        let mut log_content = classification.formatted_content.clone();
+
+                        // Phase 3 Regex Auto-Backlinker
+                        for entity in &classification.entities_found {
+                            let escaped_entity = regex::escape(entity);
+                            if let Ok(re) = regex::Regex::new(&format!(r"(?i)\b{}\b", escaped_entity)) {
+                                log_content = re.replace_all(&log_content, format!("[[{}]]", entity)).to_string();
+                            }
+                        }
+
+                        for file_path in &file_paths {
+                            let file_name = std::path::Path::new(file_path).file_name().unwrap_or_default().to_string_lossy();
+                            log_content.push_str(&format!("\n![[{}]]", file_name));
+                        }
+
+                        let today = chrono::Local::now().naive_local().date();
+                        if let Err(e) = vault_io::append_log(&log_content, today) {
+                            println!("Failed to append to log: {:?}", e);
+                        } else {
+                            success = true;
+                        }
                     }
                 } else {
                      println!("Failed to deserialize UrielClassification from result: {:?}", result_json);
@@ -198,8 +230,12 @@ async fn main() {
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
     let intents = GatewayIntents::GUILD_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
 
+    let entity_cache = Arc::new(RwLock::new(Vec::new()));
+
+    tokio::spawn(indexer::start_indexer(entity_cache.clone()));
+
     let mut client = Client::builder(&token, intents)
-        .event_handler(Handler::new())
+        .event_handler(Handler::new(entity_cache))
         .await
         .expect("Err creating client");
 
