@@ -16,6 +16,8 @@ mod media_handler;
 mod gemini;
 mod orichalcum_integration;
 mod indexer;
+mod rag;
+mod digest;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -23,6 +25,9 @@ use tokio::sync::RwLock;
 struct Handler {
     thread_cache: Cache<u64, Vec<Message>>,
     entity_cache: Arc<RwLock<Vec<String>>>,
+    dropbox_channel_id: u64,
+    discuss_channel_id: u64,
+    digest_channel_id: u64,
 }
 
 impl Handler {
@@ -30,16 +35,31 @@ impl Handler {
         let cache = Cache::builder()
             .time_to_live(Duration::from_secs(60 * 60))
             .build();
+
+        let dropbox_channel_id = env::var("DROPBOX_CHANNEL_ID")
+            .expect("Expected DROPBOX_CHANNEL_ID in environment")
+            .parse::<u64>()
+            .expect("DROPBOX_CHANNEL_ID must be a valid u64");
+
+        let discuss_channel_id = env::var("DISCUSS_CHANNEL_ID")
+            .expect("Expected DISCUSS_CHANNEL_ID in environment")
+            .parse::<u64>()
+            .expect("DISCUSS_CHANNEL_ID must be a valid u64");
+
+        let digest_channel_id = env::var("DIGEST_CHANNEL_ID")
+            .expect("Expected DIGEST_CHANNEL_ID in environment")
+            .parse::<u64>()
+            .expect("DIGEST_CHANNEL_ID must be a valid u64");
+
         Self {
             thread_cache: cache,
             entity_cache,
+            dropbox_channel_id,
+            discuss_channel_id,
+            digest_channel_id,
         }
     }
 }
-
-const DROPBOX_CHANNEL_ID: u64 = 1111111111111111111; // Placeholder
-const DISCUSS_CHANNEL_ID: u64 = 2222222222222222222; // Placeholder
-const DIGEST_CHANNEL_ID: u64 = 3333333333333333333; // Placeholder
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -47,23 +67,28 @@ impl EventHandler for Handler {
         let channel_id = msg.channel_id.get();
 
         let mut is_dropbox = false;
+        let mut is_discuss = false;
 
-        if channel_id == DROPBOX_CHANNEL_ID {
+        if channel_id == self.dropbox_channel_id {
             is_dropbox = true;
+        } else if channel_id == self.discuss_channel_id {
+            is_discuss = true;
         } else {
-            // Check if it's a thread under DROPBOX_CHANNEL_ID
+            // Check if it's a thread under DROPBOX_CHANNEL_ID or DISCUSS_CHANNEL_ID
             if let Ok(channel) = msg.channel_id.to_channel(&ctx).await {
                 if let Some(guild_channel) = channel.guild() {
                     if let Some(parent_id) = guild_channel.parent_id {
-                        if parent_id.get() == DROPBOX_CHANNEL_ID {
+                        if parent_id.get() == self.dropbox_channel_id {
                             is_dropbox = true;
+                        } else if parent_id.get() == self.discuss_channel_id {
+                            is_discuss = true;
                         }
                     }
                 }
             }
         }
 
-        if !is_dropbox && channel_id != DISCUSS_CHANNEL_ID && channel_id != DIGEST_CHANNEL_ID {
+        if !is_dropbox && !is_discuss && channel_id != self.digest_channel_id {
             return;
         }
 
@@ -71,7 +96,7 @@ impl EventHandler for Handler {
             return;
         }
 
-        if is_dropbox {
+        if is_dropbox || is_discuss {
             let mut final_content = msg.content.clone();
 
             // Thread cache logic
@@ -154,6 +179,89 @@ impl EventHandler for Handler {
                             Err(e) => {
                                 println!("Failed to create disambiguation thread: {:?}", e);
                             }
+                        }
+                    } else if matches!(classification.intent, IntentEnum::Query) {
+                        println!("Intent is Query, initiating RAG pipeline.");
+                        let search_term = &classification.formatted_content;
+                        let search_results = rag::search_vault(search_term, &vault_path).await;
+
+                        let prompt = format!(
+                            "User asked: {}\n\nSearch Results:\n{}\n\nSynthesize a helpful answer based on the search results. If the results are empty or irrelevant, say so.",
+                            final_content, search_results
+                        );
+
+                        // Fallback to basic API call if Orichalcum doesn't support complex conversational chains easily yet
+                        if let Ok(api_key) = env::var("GEMINI_API_KEY") {
+                            let client = reqwest::Client::new();
+                            let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={}", api_key);
+                            let payload = serde_json::json!({
+                                "contents": [{
+                                    "parts": [{"text": prompt}]
+                                }]
+                            });
+
+                            match client.post(&url).json(&payload).send().await {
+                                Ok(response) => {
+                                    if let Ok(body) = response.json::<serde_json::Value>().await {
+                                        if let Some(generated_text) = body.get("candidates")
+                                            .and_then(|c| c.get(0))
+                                            .and_then(|c| c.get("content"))
+                                            .and_then(|c| c.get("parts"))
+                                            .and_then(|p| p.get(0))
+                                            .and_then(|p| p.get("text"))
+                                            .and_then(|t| t.as_str()) {
+
+                                            // Send answer back to Discord
+                                            let _ = msg.channel_id.say(&ctx.http, generated_text).await;
+                                            success = true;
+                                        }
+                                    }
+                                }
+                                Err(e) => println!("Failed to query Gemini for answer: {:?}", e),
+                            }
+                        } else {
+                            println!("GEMINI_API_KEY missing for Query intent.");
+                        }
+                    } else if matches!(classification.intent, IntentEnum::Crawl) {
+                        println!("Intent is Crawl, initiating obsidian connection crawling.");
+                        let file_name = &classification.formatted_content;
+                        let crawl_results = rag::crawl_connections(file_name, &vault_path).await;
+
+                        let prompt = format!(
+                            "User asked to explore connections for: {}\n\nConnection Crawl Results:\n{}\n\nSynthesize a helpful answer based on these connections. Describe what this note links to and what links back to it.",
+                            final_content, crawl_results
+                        );
+
+                        if let Ok(api_key) = env::var("GEMINI_API_KEY") {
+                            let client = reqwest::Client::new();
+                            let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={}", api_key);
+                            let payload = serde_json::json!({
+                                "contents": [{
+                                    "parts": [{"text": prompt}]
+                                }]
+                            });
+
+                            match client.post(&url).json(&payload).send().await {
+                                Ok(response) => {
+                                    if let Ok(body) = response.json::<serde_json::Value>().await {
+                                        if let Some(generated_text) = body.get("candidates")
+                                            .and_then(|c| c.get(0))
+                                            .and_then(|c| c.get("content"))
+                                            .and_then(|c| c.get("parts"))
+                                            .and_then(|p| p.get(0))
+                                            .and_then(|p| p.get("text"))
+                                            .and_then(|t| t.as_str()) {
+
+                                            // Send answer back to Discord
+                                            let _ = msg.channel_id.say(&ctx.http, generated_text).await;
+                                            success = true;
+                                        }
+                                    }
+                                }
+                                Err(e) => println!("Failed to query Gemini for crawl synthesis: {:?}", e),
+                            }
+                        } else {
+                            println!("GEMINI_API_KEY missing for Crawl intent.");
                         }
                     } else {
                         let mut log_content = classification.formatted_content.clone();
@@ -248,6 +356,27 @@ async fn main() {
         .event_handler(Handler::new(entity_cache))
         .await
         .expect("Err creating client");
+
+    let http_clone = client.http.clone();
+
+    tokio::spawn(async move {
+        use tokio_cron_scheduler::{Job, JobScheduler};
+
+        let mut sched = JobScheduler::new().await.unwrap();
+
+        // Target 06:00 AM daily
+        sched.add(
+            Job::new_async("0 0 6 * * * *", move |_uuid, _l| {
+                let http = http_clone.clone();
+                Box::pin(async move {
+                    println!("Running daily digest aggregation...");
+                    digest::run_digest(http).await;
+                })
+            }).unwrap()
+        ).await.unwrap();
+
+        sched.start().await.unwrap();
+    });
 
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);

@@ -35,7 +35,10 @@ impl AsyncNodeLogic for GeminiIngestionNode {
 
         let prompt_text = format!(
             "Available entities: [{}]. If user mentions an entity, match exactly. If ambiguous, set intent to Disambiguate. \
-            Classify the following text into one of these intents: Note, Draft, Event, Disambiguate. Return JSON strictly matching this schema: {{ 'intent': '...', 'target_folder': '...', 'entities_found': [...], 'formatted_content': '...' }}. Text: {}",
+            Classify the following text into one of these intents: Note, Draft, Event, Disambiguate, Query, Crawl. \
+            If the user asks a question or needs information from the vault, use the Query intent and place the optimal search string (a keyword or short phrase) in the 'formatted_content' field. \
+            If the user asks to explore connections, backlinks, or outgoing links for a specific note or entity, use the Crawl intent and place the exact note name in the 'formatted_content' field. \
+            Return JSON strictly matching this schema: {{ 'intent': '...', 'target_folder': '...', 'entities_found': [...], 'formatted_content': '...' }}. Text: {}",
             known_entities_str, input_text
         );
 
