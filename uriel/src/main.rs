@@ -16,6 +16,7 @@ mod media_handler;
 mod gemini;
 mod orichalcum_integration;
 mod indexer;
+mod rag;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -47,23 +48,28 @@ impl EventHandler for Handler {
         let channel_id = msg.channel_id.get();
 
         let mut is_dropbox = false;
+        let mut is_discuss = false;
 
         if channel_id == DROPBOX_CHANNEL_ID {
             is_dropbox = true;
+        } else if channel_id == DISCUSS_CHANNEL_ID {
+            is_discuss = true;
         } else {
-            // Check if it's a thread under DROPBOX_CHANNEL_ID
+            // Check if it's a thread under DROPBOX_CHANNEL_ID or DISCUSS_CHANNEL_ID
             if let Ok(channel) = msg.channel_id.to_channel(&ctx).await {
                 if let Some(guild_channel) = channel.guild() {
                     if let Some(parent_id) = guild_channel.parent_id {
                         if parent_id.get() == DROPBOX_CHANNEL_ID {
                             is_dropbox = true;
+                        } else if parent_id.get() == DISCUSS_CHANNEL_ID {
+                            is_discuss = true;
                         }
                     }
                 }
             }
         }
 
-        if !is_dropbox && channel_id != DISCUSS_CHANNEL_ID && channel_id != DIGEST_CHANNEL_ID {
+        if !is_dropbox && !is_discuss && channel_id != DIGEST_CHANNEL_ID {
             return;
         }
 
@@ -71,7 +77,7 @@ impl EventHandler for Handler {
             return;
         }
 
-        if is_dropbox {
+        if is_dropbox || is_discuss {
             let mut final_content = msg.content.clone();
 
             // Thread cache logic
@@ -154,6 +160,48 @@ impl EventHandler for Handler {
                             Err(e) => {
                                 println!("Failed to create disambiguation thread: {:?}", e);
                             }
+                        }
+                    } else if matches!(classification.intent, IntentEnum::Query) {
+                        println!("Intent is Query, initiating RAG pipeline.");
+                        let search_term = &classification.formatted_content;
+                        let search_results = rag::search_vault(search_term, &vault_path);
+
+                        let prompt = format!(
+                            "User asked: {}\n\nSearch Results:\n{}\n\nSynthesize a helpful answer based on the search results. If the results are empty or irrelevant, say so.",
+                            final_content, search_results
+                        );
+
+                        // Fallback to basic API call if Orichalcum doesn't support complex conversational chains easily yet
+                        if let Ok(api_key) = env::var("GEMINI_API_KEY") {
+                            let client = reqwest::Client::new();
+                            let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={}", api_key);
+                            let payload = serde_json::json!({
+                                "contents": [{
+                                    "parts": [{"text": prompt}]
+                                }]
+                            });
+
+                            match client.post(&url).json(&payload).send().await {
+                                Ok(response) => {
+                                    if let Ok(body) = response.json::<serde_json::Value>().await {
+                                        if let Some(generated_text) = body.get("candidates")
+                                            .and_then(|c| c.get(0))
+                                            .and_then(|c| c.get("content"))
+                                            .and_then(|c| c.get("parts"))
+                                            .and_then(|p| p.get(0))
+                                            .and_then(|p| p.get("text"))
+                                            .and_then(|t| t.as_str()) {
+
+                                            // Send answer back to Discord
+                                            let _ = msg.channel_id.say(&ctx.http, generated_text).await;
+                                            success = true;
+                                        }
+                                    }
+                                }
+                                Err(e) => println!("Failed to query Gemini for answer: {:?}", e),
+                            }
+                        } else {
+                            println!("GEMINI_API_KEY missing for Query intent.");
                         }
                     } else {
                         let mut log_content = classification.formatted_content.clone();
