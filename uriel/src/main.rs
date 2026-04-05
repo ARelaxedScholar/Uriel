@@ -24,6 +24,9 @@ use tokio::sync::RwLock;
 struct Handler {
     thread_cache: Cache<u64, Vec<Message>>,
     entity_cache: Arc<RwLock<Vec<String>>>,
+    dropbox_channel_id: u64,
+    discuss_channel_id: u64,
+    digest_channel_id: u64,
 }
 
 impl Handler {
@@ -31,16 +34,31 @@ impl Handler {
         let cache = Cache::builder()
             .time_to_live(Duration::from_secs(60 * 60))
             .build();
+
+        let dropbox_channel_id = env::var("DROPBOX_CHANNEL_ID")
+            .expect("Expected DROPBOX_CHANNEL_ID in environment")
+            .parse::<u64>()
+            .expect("DROPBOX_CHANNEL_ID must be a valid u64");
+
+        let discuss_channel_id = env::var("DISCUSS_CHANNEL_ID")
+            .expect("Expected DISCUSS_CHANNEL_ID in environment")
+            .parse::<u64>()
+            .expect("DISCUSS_CHANNEL_ID must be a valid u64");
+
+        let digest_channel_id = env::var("DIGEST_CHANNEL_ID")
+            .expect("Expected DIGEST_CHANNEL_ID in environment")
+            .parse::<u64>()
+            .expect("DIGEST_CHANNEL_ID must be a valid u64");
+
         Self {
             thread_cache: cache,
             entity_cache,
+            dropbox_channel_id,
+            discuss_channel_id,
+            digest_channel_id,
         }
     }
 }
-
-const DROPBOX_CHANNEL_ID: u64 = 1111111111111111111; // Placeholder
-const DISCUSS_CHANNEL_ID: u64 = 2222222222222222222; // Placeholder
-const DIGEST_CHANNEL_ID: u64 = 3333333333333333333; // Placeholder
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -50,18 +68,18 @@ impl EventHandler for Handler {
         let mut is_dropbox = false;
         let mut is_discuss = false;
 
-        if channel_id == DROPBOX_CHANNEL_ID {
+        if channel_id == self.dropbox_channel_id {
             is_dropbox = true;
-        } else if channel_id == DISCUSS_CHANNEL_ID {
+        } else if channel_id == self.discuss_channel_id {
             is_discuss = true;
         } else {
             // Check if it's a thread under DROPBOX_CHANNEL_ID or DISCUSS_CHANNEL_ID
             if let Ok(channel) = msg.channel_id.to_channel(&ctx).await {
                 if let Some(guild_channel) = channel.guild() {
                     if let Some(parent_id) = guild_channel.parent_id {
-                        if parent_id.get() == DROPBOX_CHANNEL_ID {
+                        if parent_id.get() == self.dropbox_channel_id {
                             is_dropbox = true;
-                        } else if parent_id.get() == DISCUSS_CHANNEL_ID {
+                        } else if parent_id.get() == self.discuss_channel_id {
                             is_discuss = true;
                         }
                     }
@@ -69,7 +87,7 @@ impl EventHandler for Handler {
             }
         }
 
-        if !is_dropbox && !is_discuss && channel_id != DIGEST_CHANNEL_ID {
+        if !is_dropbox && !is_discuss && channel_id != self.digest_channel_id {
             return;
         }
 
