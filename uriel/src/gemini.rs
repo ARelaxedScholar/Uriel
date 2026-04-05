@@ -6,6 +6,8 @@ pub enum IntentEnum {
     Draft,
     Event,
     Disambiguate,
+    Query,
+    Crawl,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
