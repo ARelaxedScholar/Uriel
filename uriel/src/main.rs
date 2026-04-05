@@ -164,7 +164,7 @@ impl EventHandler for Handler {
                     } else if matches!(classification.intent, IntentEnum::Query) {
                         println!("Intent is Query, initiating RAG pipeline.");
                         let search_term = &classification.formatted_content;
-                        let search_results = rag::search_vault(search_term, &vault_path);
+                        let search_results = rag::search_vault(search_term, &vault_path).await;
 
                         let prompt = format!(
                             "User asked: {}\n\nSearch Results:\n{}\n\nSynthesize a helpful answer based on the search results. If the results are empty or irrelevant, say so.",
@@ -202,6 +202,47 @@ impl EventHandler for Handler {
                             }
                         } else {
                             println!("GEMINI_API_KEY missing for Query intent.");
+                        }
+                    } else if matches!(classification.intent, IntentEnum::Crawl) {
+                        println!("Intent is Crawl, initiating obsidian connection crawling.");
+                        let file_name = &classification.formatted_content;
+                        let crawl_results = rag::crawl_connections(file_name, &vault_path).await;
+
+                        let prompt = format!(
+                            "User asked to explore connections for: {}\n\nConnection Crawl Results:\n{}\n\nSynthesize a helpful answer based on these connections. Describe what this note links to and what links back to it.",
+                            final_content, crawl_results
+                        );
+
+                        if let Ok(api_key) = env::var("GEMINI_API_KEY") {
+                            let client = reqwest::Client::new();
+                            let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key={}", api_key);
+                            let payload = serde_json::json!({
+                                "contents": [{
+                                    "parts": [{"text": prompt}]
+                                }]
+                            });
+
+                            match client.post(&url).json(&payload).send().await {
+                                Ok(response) => {
+                                    if let Ok(body) = response.json::<serde_json::Value>().await {
+                                        if let Some(generated_text) = body.get("candidates")
+                                            .and_then(|c| c.get(0))
+                                            .and_then(|c| c.get("content"))
+                                            .and_then(|c| c.get("parts"))
+                                            .and_then(|p| p.get(0))
+                                            .and_then(|p| p.get("text"))
+                                            .and_then(|t| t.as_str()) {
+
+                                            // Send answer back to Discord
+                                            let _ = msg.channel_id.say(&ctx.http, generated_text).await;
+                                            success = true;
+                                        }
+                                    }
+                                }
+                                Err(e) => println!("Failed to query Gemini for crawl synthesis: {:?}", e),
+                            }
+                        } else {
+                            println!("GEMINI_API_KEY missing for Crawl intent.");
                         }
                     } else {
                         let mut log_content = classification.formatted_content.clone();
